@@ -1,0 +1,8 @@
+[project]
+name = "omega-cal-mail"
+version = "0.1.0"
+description = "Proton Mail -> omega calendar bridge (calmail)"
+requires-python = ">=3.11"
+dependencies = [
+    "protonmail-api-client",
+]
