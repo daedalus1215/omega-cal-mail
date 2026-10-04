@@ -28,6 +28,7 @@ State:   ~/.config/omega-cal-mail/{session.pkl,state.json}   (chmod 600)
 """
 
 import argparse
+import fcntl
 import html
 import json
 import os
@@ -50,6 +51,9 @@ CONFIG_DIR = Path.home() / ".config" / "omega-cal-mail"
 ENV_FILE = CONFIG_DIR / "env"
 SESSION_FILE = CONFIG_DIR / "session.pkl"
 STATE_FILE = CONFIG_DIR / "state.json"
+LOCK_FILE = CONFIG_DIR / "calmail.lock"
+WORK_DIR = CONFIG_DIR / "work"
+_lock_fd = None
 TWO_FA_FILE = CONFIG_DIR / "2fa.txt"
 
 DEFAULT_PREFIX = "cal:"
@@ -289,19 +293,24 @@ def run_omp(text: str, sender: str) -> str:
         "--auto-approve", "--tools=bash",
         "--max-time", str(OMP_TIMEOUT_S - 40),
     ]
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(WORK_DIR, 0o700)
     try:
         p = subprocess.run(
-            cmd, cwd=str(Path.home()),
+            cmd, cwd=str(WORK_DIR),
             capture_output=True, text=True, timeout=OMP_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
         return "❌ timed out after 10 minutes — please resend"
     out = (p.stdout or "").strip()
+    err = (p.stderr or "").strip().splitlines()
+    if p.returncode != 0:
+        tail = " | ".join(err[-3:]) if err else f"omp exited {p.returncode}"
+        return f"❌ processing failed ({tail[:200]}) — please resend"
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     if lines:
         return lines[-1]
-    err = (p.stderr or "").strip().splitlines()
-    tail = " | ".join(err[-3:]) if err else f"omp exited {p.returncode} with no output"
+    tail = " | ".join(err[-3:]) if err else "omp produced no output"
     return f"❌ {tail[:400]}"
 
 
@@ -400,7 +409,24 @@ def catch_up(pm, prefix: str, state: State) -> None:
 # main loop
 # ---------------------------------------------------------------------------
 
+def acquire_lock() -> None:
+    """One watch loop per machine.
+
+    A second instance would race the first on the same messages and could
+    double-create events; refuse to start instead of syncing.
+    """
+    global _lock_fd
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _lock_fd = open(LOCK_FILE, "a+")
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(f"calmail already running (lock held on {LOCK_FILE}); "
+                 "not starting a second instance")
+
+
 def run(env: dict) -> None:
+    acquire_lock()
     prefix = (env.get("CAL_PREFIX") or DEFAULT_PREFIX).strip() or DEFAULT_PREFIX
     fallback_poll = float(env.get("CAL_POLL_SECONDS", "30"))
     state = State.load()
