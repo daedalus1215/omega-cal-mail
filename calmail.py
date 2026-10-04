@@ -46,6 +46,7 @@ from pathlib import Path
 from protonmail import ProtonMail
 from protonmail import client as _pc
 from protonmail.exceptions import CantSolveImageCaptcha, InvalidCaptcha
+from requests.adapters import HTTPAdapter
 
 CONFIG_DIR = Path.home() / ".config" / "omega-cal-mail"
 ENV_FILE = CONFIG_DIR / "env"
@@ -60,6 +61,22 @@ DEFAULT_PREFIX = "cal:"
 OMP_TIMEOUT_S = 640
 APPVERSION_FILE = CONFIG_DIR / "appversion"
 FALLBACK_APP_VERSION = "5.0.423.0"  # last known good, 2026-10-01
+
+
+class _TimeoutAdapter(HTTPAdapter):
+    """The Proton library sets no socket timeouts, so a stalled keep-alive
+    connection (a stale CLOSE-WAIT socket) can hang a request forever and
+    freeze the daemon. Cap every request at 30 s."""
+    def send(self, request, **kwargs):
+        kwargs.setdefault("timeout", 30)
+        return super().send(request, **kwargs)
+
+
+def new_pm() -> ProtonMail:
+    """ProtonMail client with hard request timeouts."""
+    pm = ProtonMail()
+    pm.session.mount("https://", _TimeoutAdapter())
+    return pm
 
 
 def log(msg: str) -> None:
@@ -237,7 +254,7 @@ def fresh_login(env: dict) -> ProtonMail:
     log(f"fresh login for {env['PROTON_USERNAME']} (app version {ver})")
     last = None
     for attempt in range(5):
-        pm = ProtonMail()
+        pm = new_pm()
         try:
             pm.login(env["PROTON_USERNAME"], env["PROTON_PASSWORD"],
                      getter_2fa_code=make_2fa_getter())
@@ -262,7 +279,7 @@ def authenticate(env: dict) -> ProtonMail:
     if not username or not password:
         sys.exit(f"PROTON_USERNAME / PROTON_PASSWORD missing in {ENV_FILE}")
     if SESSION_FILE.exists():
-        pm = ProtonMail()
+        pm = new_pm()
         try:
             pm.load_session(str(SESSION_FILE), auto_save=True)
             pm.get_user_info()
@@ -425,6 +442,26 @@ def acquire_lock() -> None:
                  "not starting a second instance")
 
 
+def safety_scan(pm, prefix: str, state: State) -> None:
+    """Direct inbox scan.
+
+    The events feed can go quiet without failing (observed 2026-10-04:
+    feed healthy, new mail never delivered), so the event loop
+    cross-checks the inbox every few minutes.
+    """
+    try:
+        msgs = pm.get_messages_by_page(page=0, page_size=20)
+    except Exception as e:
+        log(f"safety-net scan failed: {e!r}")
+        return
+    cands = sorted((m for m in msgs if is_candidate(pm, m, prefix, state)),
+                   key=lambda m: m.time)
+    if cands:
+        log(f"safety-net scan found {len(cands)} pending calendar message(s)")
+    for m in cands:
+        handle(pm, m, prefix, state)
+
+
 def run(env: dict) -> None:
     acquire_lock()
     prefix = (env.get("CAL_PREFIX") or DEFAULT_PREFIX).strip() or DEFAULT_PREFIX
@@ -435,10 +472,11 @@ def run(env: dict) -> None:
     catch_up(pm, prefix, state)
     use_events = True
     errors = 0
+    scans_since_scan = 0
     while True:
         if use_events:
             try:
-                msg = pm.wait_for_new_message(interval=10)
+                msg = pm.wait_for_new_message(interval=10, timeout=60)
                 errors = 0
             except Exception as e:
                 errors += 1
@@ -450,9 +488,12 @@ def run(env: dict) -> None:
                 pm = authenticate(env)
                 catch_up(pm, prefix, state)
                 continue
-            if msg is None or not is_candidate(pm, msg, prefix, state):
-                continue
-            handle(pm, msg, prefix, state)
+            if msg is not None and is_candidate(pm, msg, prefix, state):
+                handle(pm, msg, prefix, state)
+            scans_since_scan += 1
+            if scans_since_scan >= 5:  # ~5 min of event waits
+                scans_since_scan = 0
+                safety_scan(pm, prefix, state)
         else:
             time.sleep(fallback_poll)
             try:
@@ -488,7 +529,7 @@ def cmd_login(env: dict) -> None:
 def cmd_check(env: dict) -> None:
     if not SESSION_FILE.exists():
         sys.exit(f"no saved session at {SESSION_FILE}; run: calmail.py login")
-    pm = ProtonMail()
+    pm = new_pm()
     pm.load_session(str(SESSION_FILE), auto_save=True)
     pm.get_user_info()
     print(f"session OK; addresses: {', '.join(a.email for a in pm.account_addresses)}")
