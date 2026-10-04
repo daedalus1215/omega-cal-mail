@@ -113,6 +113,7 @@ to yourself with subject `cal: ` makes it a two-tap action.
 | processed ids | `~/.config/omega-cal-mail/state.json` |
 | app-version cache | `~/.config/omega-cal-mail/appversion` |
 | 2FA on re-login | drop the TOTP code in `~/.config/omega-cal-mail/2fa.txt`; a pending login picks it up within 30 s |
+| single instance | `flock` on `~/.config/omega-cal-mail/calmail.lock` — a second `calmail.py run` (e.g. for debugging) is refused while the service runs |
 
 Sessions last weeks to months, so logins (the only CAPTCHA-prone step) are
 rare. When a fresh login is needed the daemon resolves Proton's current web
@@ -152,10 +153,12 @@ text to keep it off production) and prints the reply line.
   the live session in `session.pkl`. The session file is full-mailbox
   access — treat it accordingly (and note that deleting it locally does not
   revoke anything server-side).
-- Anyone who can mail your account can submit calendar requests. The skill
-  scopes the assistant to the shared calendar and treats mail text as
-  data; the headless session runs with a single tool and a 10-minute cap.
-  Still: treat mail content as untrusted input.
+- Anyone who can mail your account can submit calendar requests. The
+  skill scopes the assistant to the shared calendar and treats mail text
+  as data; the headless session runs with a single tool, a 10-minute
+  cap, and an empty mode-700 scratch working directory (not your home
+  dir), so a successful prompt injection has no files to reach. Still:
+  treat mail content as untrusted input.
 - The daemon never reads or forwards mail that doesn't match the prefix;
   non-matching mail is left untouched (and unread).
 
