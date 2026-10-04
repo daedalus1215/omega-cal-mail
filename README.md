@@ -25,7 +25,10 @@ you (phone) --"cal: tues 7:20am pickup cc"--> Proton inbox
 
 - A Python daemon (`calmail.py`, built on `protonmail-api-client`) keeps a
   Proton session alive and waits for new mail via Proton's event-polling
-  API; if that endpoint misbehaves it degrades to periodic inbox scans.
+  API; a direct inbox scan cross-checks every ~5 minutes as a safety net
+  (the feed can go healthy yet silent), repeated failures degrade to pure
+  inbox polling, and every API request is capped at 30 s so a stalled
+  connection cannot freeze the loop.
 - A message is a calendar request when its **subject** starts with the
   prefix (`cal:`, case-insensitive). The text after the prefix is the
   request; a non-empty body is appended to it (HTML is stripped to text).
