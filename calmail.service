@@ -1,0 +1,15 @@
+[Unit]
+Description=Proton Mail -> omega calendar bridge (calmail)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/omega-cal-mail
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v20.20.2/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/Projects/omega-cal-mail/.venv/bin/python %h/Projects/omega-cal-mail/calmail.py run
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
